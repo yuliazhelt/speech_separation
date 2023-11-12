@@ -47,11 +47,11 @@ class BaseDataset(Dataset):
         audio_target_wave, audio_target_spec = self.process_wave(audio_target_wave)
         return {
             "audio_ref": audio_ref_wave,
-            "spectrogram_ref": audio_ref_spec,
+            # "spectrogram_ref": audio_ref_spec,
             "audio_mix": audio_mix_wave,
-            "spectrogram_mix": audio_mix_spec,
+            # "spectrogram_mix": audio_mix_spec,
             "audio_target": audio_target_wave,
-            "spectrogram_target": audio_target_spec,
+            # "spectrogram_target": audio_target_spec,
             "duration_mix": audio_mix_wave.size(1) / self.config_parser["preprocessing"]["sr"],
             "duration_ref": audio_ref_wave.size(1) / self.config_parser["preprocessing"]["sr"],
             "path_ref": audio_ref_path,

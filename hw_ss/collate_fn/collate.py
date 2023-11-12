@@ -19,15 +19,15 @@ def collate_fn(dataset_items: List[dict]):
 
         result_batch_list['audio_ref'].append(item['audio_ref'].squeeze(0))
         result_batch_list['audio_ref_length'].append(item['audio_ref'].shape[1])
-        result_batch_list['spectrogram_ref'].append(item['spectrogram_ref'].squeeze(0).T)
+        # result_batch_list['spectrogram_ref'].append(item['spectrogram_ref'].squeeze(0).T)
 
         result_batch_list['audio_mix'].append(item['audio_mix'].squeeze(0))
         result_batch_list['audio_mix_length'].append(item['audio_mix'].shape[1])
-        result_batch_list['spectrogram_mix'].append(item['spectrogram_mix'].squeeze(0).T)
+        # result_batch_list['spectrogram_mix'].append(item['spectrogram_mix'].squeeze(0).T)
 
         result_batch_list['audio_target'].append(item['audio_target'].squeeze(0))
         result_batch_list['audio_target_length'].append(item['audio_target'].shape[1])
-        result_batch_list['spectrogram_target'].append(item['spectrogram_target'].squeeze(0).T)
+        # result_batch_list['spectrogram_target'].append(item['spectrogram_target'].squeeze(0).T)
 
         result_batch_list['path_ref'].append(item['path_ref'])
         result_batch_list['path_mix'].append(item['path_mix'])
@@ -38,15 +38,15 @@ def collate_fn(dataset_items: List[dict]):
 
     result_batch['audio_ref'] = pad_sequence(result_batch_list['audio_ref'], batch_first=True)
     result_batch['audio_ref_length'] = torch.tensor(result_batch_list['audio_ref_length'])
-    result_batch['spectrogram_ref'] = pad_sequence(result_batch_list['spectrogram_ref'], batch_first=True).transpose(1, 2)
+    # result_batch['spectrogram_ref'] = pad_sequence(result_batch_list['spectrogram_ref'], batch_first=True).transpose(1, 2)
 
     result_batch['audio_mix'] = pad_sequence(result_batch_list['audio_mix'], batch_first=True)
     result_batch['audio_mix_length'] = torch.tensor(result_batch_list['audio_mix_length'])
-    result_batch['spectrogram_mix'] = pad_sequence(result_batch_list['spectrogram_mix'], batch_first=True).transpose(1, 2)
+    # result_batch['spectrogram_mix'] = pad_sequence(result_batch_list['spectrogram_mix'], batch_first=True).transpose(1, 2)
     
     result_batch['audio_target'] = pad_sequence(result_batch_list['audio_target'], batch_first=True)
     result_batch['audio_target_length'] = torch.tensor(result_batch_list['audio_target_length'])
-    result_batch['spectrogram_target'] = pad_sequence(result_batch_list['spectrogram_target'], batch_first=True).transpose(1, 2)
+    # result_batch['spectrogram_target'] = pad_sequence(result_batch_list['spectrogram_target'], batch_first=True).transpose(1, 2)
     
 
     result_batch['speaker_id'] = torch.tensor(result_batch_list['speaker_id'])

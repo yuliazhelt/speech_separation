@@ -77,6 +77,8 @@ class TCNBlock(nn.Module):
 
         super(TCNBlock, self).__init__()
 
+        padding = dilation * (kernel_size - 1) // 2
+
         self.net = nn.Sequential(
             nn.Conv1d(in_channels=in_channels + speaker_emb_dim if is_first else in_channels, out_channels=hidden_channels, kernel_size=1),
             GlobalLayerNorm(channel_size=hidden_channels),
@@ -86,6 +88,7 @@ class TCNBlock(nn.Module):
                 out_channels=hidden_channels,
                 kernel_size=kernel_size,
                 dilation=dilation,
+                padding=padding,
                 groups=hidden_channels
             ),
             GlobalLayerNorm(channel_size=hidden_channels),
@@ -103,7 +106,6 @@ class TCNBlock(nn.Module):
             inp = torch.concat([x, speaker_emb], dim=1)
         else:
             inp = x
-
         x = x + self.net(inp)
         return x
     
@@ -112,6 +114,7 @@ class StackedTCNs(nn.Module):
     def __init__(self, in_channels, hidden_channels, speaker_emb_dim, num_blocks):
 
         super(StackedTCNs, self).__init__()
+
         self.first_block = TCNBlock(
             in_channels=in_channels,
             hidden_channels=hidden_channels,
@@ -140,8 +143,43 @@ class StackedTCNs(nn.Module):
         x = self.first_block(x, speaker_emb)
         x = self.other_blocks(x)
         return x
+    
+class SpeakerExtractor(nn.Module):
 
+    def __init__(self, N_filters, in_channels, hidden_channels, speaker_emb_dim, num_blocks, num_stacked):
+        super(SpeakerExtractor, self).__init__()
 
+        self.num_stacked = num_stacked
+
+        self.speaker_extractor_prep = nn.Sequential(         
+            ChannelWiseLayerNorm(normalized_shape=3*N_filters),
+            nn.Conv1d(in_channels=3*N_filters, out_channels=in_channels, kernel_size=1)
+        )
+
+        self.tcn_staked_blocks = nn.ModuleList()
+
+        for _ in range(num_stacked):
+            self.tcn_staked_blocks.append(StackedTCNs(in_channels=in_channels, hidden_channels=hidden_channels, speaker_emb_dim=speaker_emb_dim, num_blocks=num_blocks))
+
+        self.masks_conv = nn.ModuleList(
+            [nn.Conv1d(in_channels=in_channels, out_channels=N_filters, kernel_size=1) for _ in range(3)]
+        )
+
+    def forward(self, y, y1, y2, y3, speaker_emb):
+
+        y = self.speaker_extractor_prep(y)
+
+        for i in range(self.num_stacked):
+            y = self.tcn_staked_blocks[i](y, speaker_emb)
+
+        m1 = F.relu(self.masks_conv[0](y1))
+        m2 = F.relu(self.masks_conv[1](y2))
+        m3 = F.relu(self.masks_conv[2](y3))
+
+        s1 = y1 * m1
+        s2 = y2 * m2
+        s3 = y3 * m3
+        return s1, s2, s3
 
 class SpExPlus(nn.Module):
     def __init__(self, n_speakers, speaker_emb_dim=256, **batch):
@@ -176,20 +214,20 @@ class SpExPlus(nn.Module):
         self.speaker_encoder_head = nn.Linear(in_features=self.speaker_emb_dim, out_features=self.n_speakers)
 
         # Speaker Extractor
-        self.speaker_extractor = nn.Sequential(
-            ChannelWiseLayerNorm(normalized_shape=3*self.N_filters),
-            nn.Conv1d(in_channels=3*self.N_filters, out_channels=256, kernel_size=1),
-            StackedTCNs(in_channels=256, hidden_channels=512, speaker_emb_dim=self.speaker_emb_dim, num_blocks=8),
-            StackedTCNs(in_channels=256, hidden_channels=512, speaker_emb_dim=self.speaker_emb_dim, num_blocks=8)
-        )
-        self.masks_conv = nn.ModuleList(
-            [nn.Conv1d(in_channels=256, out_channels=self.N_filters, kernel_size=1) for _ in range(3)]
+        
+        self.speaker_extractor = SpeakerExtractor(
+            N_filters=self.N_filters,
+            in_channels=256,
+            hidden_channels=512,
+            speaker_emb_dim=self.speaker_emb_dim,
+            num_blocks=4,
+            num_stacked=2
         )
 
         # Speech Decoder
-        self.decoder_short = nn.Conv1d(in_channels=self.N_filters, out_channels=1, kernel_size=self.L1, stride=self.L1 // 2)
-        self.decoder_middle = nn.Conv1d(in_channels=self.N_filters, out_channels=1, kernel_size=self.L2, stride=self.L1 // 2)
-        self.decoder_long = nn.Conv1d(in_channels=self.N_filters, out_channels=1, kernel_size=self.L3, stride=self.L1 // 2)
+        self.decoder_short = nn.ConvTranspose1d(in_channels=self.N_filters, out_channels=1, kernel_size=self.L1, stride=self.L1 // 2)
+        self.decoder_middle = nn.ConvTranspose1d(in_channels=self.N_filters, out_channels=1, kernel_size=self.L2, stride=self.L1 // 2)
+        self.decoder_long = nn.ConvTranspose1d(in_channels=self.N_filters, out_channels=1, kernel_size=self.L3, stride=self.L1 // 2)
 
 
     def forward(self, audio_mix : Tensor, audio_ref : Tensor, audio_ref_length : Tensor, *args, **kwargs):
@@ -233,21 +271,15 @@ class SpExPlus(nn.Module):
         cls_logits = self.speaker_encoder_head(speaker_emb)
 
         # Speaker Extractor
-        self.speaker_extractor(y, speaker_emb)
 
-        m1 = F.relu(self.masks_conv[0](y1))
-        m2 = F.relu(self.masks_conv[1](y2))
-        m3 = F.relu(self.masks_conv[2](y3))
-
-        s1 = y1 * m1
-        s2 = y2 * m2
-        s3 = y3 * m3
+        s1, s2, s3 = self.speaker_extractor(y, y1, y2, y3, speaker_emb)
 
         # Speech Decoder
 
-        s1 = self.decoder_short(s1)
-        s2 = self.decoder_middle(s2)
-        s3 = self.decoder_long(s3)
+
+        s1 = self.decoder_short(s1)[:, :, :mix_len]
+        s2 = self.decoder_middle(s2)[:, :, :mix_len]
+        s3 = self.decoder_long(s3)[:, :, :mix_len]
 
 
         return {"s1" : s1, "s2" : s2, "s3" : s3, "logits": cls_logits}
