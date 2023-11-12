@@ -28,7 +28,7 @@ URL_LINKS = {
 
 
 class LibrispeechDatasetMixed(BaseDataset):
-    def __init__(self, part, data_dir=None, *args, **kwargs):
+    def __init__(self, part, nfiles, data_dir=None, *args, **kwargs):
         assert part in URL_LINKS or part == 'train_all'
 
         if data_dir is None:
@@ -42,6 +42,8 @@ class LibrispeechDatasetMixed(BaseDataset):
         else:
             index = self._get_or_load_index(part)
 
+        self.nfiles = nfiles
+
         super().__init__(index, *args, **kwargs)
 
 
@@ -49,7 +51,7 @@ class LibrispeechDatasetMixed(BaseDataset):
         mixer = MixtureGenerator(
             speakers_files_path=split_dir,
             out_folder=out_dir,
-            nfiles=3000 if 'test' in part else 20000,
+            nfiles=self.nfiles,
             test=('test' in part)
         )
 
