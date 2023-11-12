@@ -19,6 +19,33 @@ class ChannelWiseLayerNorm(nn.LayerNorm):
         x = torch.transpose(x, 1, 2) # bs x C x L => bs x L x C
         return x
 
+class GlobalLayerNorm(nn.Module):
+    """Global Layer Normalization (gLN)."""
+
+    def __init__(self, channel_size):
+        super().__init__()
+        # shape (1, C, 1)
+        self.gamma = nn.Parameter(torch.Tensor(1, channel_size, 1))
+        self.beta = nn.Parameter(torch.Tensor(1, channel_size, 1))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        self.gamma.data.fill_(1)
+        self.beta.data.zero_()
+
+    @torch.cuda.amp.autocast(enabled=False)
+    def forward(self, y):
+        """Forward.
+        Args:
+            y: (B, C, L) B - batch size, C - channel size, L - length
+        """
+
+        mean = y.mean(dim=(1, 2), keepdim=True)  # (B, 1, 1)
+        var = (torch.pow(y - mean, 2)).mean(dim=(1, 2), keepdim=True)
+        gLN = self.gamma * (y - mean) / torch.pow(var + 1e-6, 0.5) + self.beta
+
+        return gLN
+
 
 class ResNetBlock(nn.Module):
     def __init__(self, in_dim, hidden_dim):
@@ -44,64 +71,75 @@ class ResNetBlock(nn.Module):
         return x
     
 
-# class TCNBlock(nn.Module):
+class TCNBlock(nn.Module):
 
-#     def __init__(self, in_channels, hidden_channels, kernel_size, dilation=1):
+    def __init__(self, in_channels, hidden_channels, speaker_emb_dim, kernel_size, is_first, dilation=1):
 
-#         super(TCNBlock, self).__init__()
+        super(TCNBlock, self).__init__()
 
-#         self.net = nn.Sequential(
-#             nn.Conv1d(in_channels=in_channels, out_channels=hidden_channels, kernel_size=1),
-#             nn.LayerNorm([hidden_channels, ]),
-#             nn.PReLU(),
-#             nn.Conv1d(
-#                 in_channels=hidden_channels,
-#                 out_channels=hidden_channels,
-#                 kernel_size=kernel_size,
-#                 dilation=dilation,
-#                 groups=hidden_channels
-#             ),
-#             nn.LayerNorm([]),
-#             nn.PReLU(),
-#             nn.Conv1d(in_channels=hidden_channels, out_channels=in_channels, kernel_size=1),
-#         )
+        self.net = nn.Sequential(
+            nn.Conv1d(in_channels=in_channels + speaker_emb_dim if is_first else in_channels, out_channels=hidden_channels, kernel_size=1),
+            GlobalLayerNorm(channel_size=hidden_channels),
+            nn.PReLU(),
+            nn.Conv1d(
+                in_channels=hidden_channels,
+                out_channels=hidden_channels,
+                kernel_size=kernel_size,
+                dilation=dilation,
+                groups=hidden_channels
+            ),
+            GlobalLayerNorm(channel_size=hidden_channels),
+            nn.PReLU(),
+            nn.Conv1d(in_channels=hidden_channels, out_channels=in_channels, kernel_size=1),
+        )
 
 
-#     def forward(self, x, speaker_emb=None):
-#         #print(x.shape)
-#         T = x.shape[-1]
-#         #print(aux.shape)
-#         aux = torch.unsqueeze(aux, -1)
-#         #print(aux.shape)
-#         aux = aux.repeat(1,1,T)
+    def forward(self, x, speaker_emb=None):
+        if speaker_emb is not None:
+            # stack on channels dim
+            L = x.shape[-1]
+            speaker_emb = torch.unsqueeze(speaker_emb, -1)
+            speaker_emb = speaker_emb.repeat(1, 1, L)
+            inp = torch.concat([x, speaker_emb], dim=1)
+        else:
+            inp = x
 
-#         if speaker_emb is not None:
-#             x = torch.concat([x, speaker_emb], dim=)
-#         self.net
- 
-#         return x
+        x = x + self.net(inp)
+        return x
     
-# class StackedTCNs(nn.Module):
+class StackedTCNs(nn.Module):
 
-#     def __init__(self, in_channels, hidden_channels, num_blocks):
+    def __init__(self, in_channels, hidden_channels, speaker_emb_dim, num_blocks):
 
-#         super(StackedTCNs, self).__init__()
-#         self.first_block = TCNBlock(
-#             in_channels=in_channels,
-#             hidden_channels=hidden_channels,
-#             kernel_size=3
-#         )
+        super(StackedTCNs, self).__init__()
+        self.first_block = TCNBlock(
+            in_channels=in_channels,
+            hidden_channels=hidden_channels,
+            speaker_emb_dim=speaker_emb_dim,
+            kernel_size=3,
+            is_first=True,
+            dilation=1
+        )
 
-#         for i in range(1, num_blocks):
-#             dilation = 2**i
+        tcn_blocks = []
+        for i in range(1, num_blocks):
+            tcn_blocks.append(
+                TCNBlock(
+                    in_channels=in_channels,
+                    hidden_channels=hidden_channels,
+                    speaker_emb_dim=speaker_emb_dim,
+                    kernel_size=3,
+                    is_first=False,
+                    dilation=2**i
+                )
+            )
 
-#         nn.Sequential(
+        self.other_blocks = nn.Sequential(*tcn_blocks)
 
-#     def forward(self, x, speaker_emb):
-
- 
-#         return x
-
+    def forward(self, x, speaker_emb):
+        x = self.first_block(x, speaker_emb)
+        x = self.other_blocks(x)
+        return x
 
 
 
@@ -137,15 +175,22 @@ class SpExPlus(nn.Module):
         )
         self.speaker_encoder_head = nn.Linear(in_features=self.speaker_emb_dim, out_features=self.n_speakers)
 
-
-
         # Speaker Extractor
-        # self.speaker_extractor = nn.Sequential(
-        #     ChannelWiseLayerNorm(normalized_shape=3*self.N_filters),
-        #     nn.Conv1d(in_channels=3*self.N_filters, out_channels=speaker_emb_dim, kernel_size=1),
-        #     TCNBlock(in_channels=speaker_emb_dim, )
+        self.speaker_extractor = nn.Sequential(
+            ChannelWiseLayerNorm(normalized_shape=3*self.N_filters),
+            nn.Conv1d(in_channels=3*self.N_filters, out_channels=256, kernel_size=1),
+            StackedTCNs(in_channels=256, hidden_channels=512, speaker_emb_dim=self.speaker_emb_dim, num_blocks=8),
+            StackedTCNs(in_channels=256, hidden_channels=512, speaker_emb_dim=self.speaker_emb_dim, num_blocks=8)
+        )
+        self.masks_conv = nn.ModuleList(
+            [nn.Conv1d(in_channels=256, out_channels=self.N_filters, kernel_size=1) for _ in range(3)]
+        )
 
-        # )
+        # Speech Decoder
+        self.decoder_short = nn.Conv1d(in_channels=self.N_filters, out_channels=1, kernel_size=self.L1, stride=self.L1 // 2)
+        self.decoder_middle = nn.Conv1d(in_channels=self.N_filters, out_channels=1, kernel_size=self.L2, stride=self.L1 // 2)
+        self.decoder_long = nn.Conv1d(in_channels=self.N_filters, out_channels=1, kernel_size=self.L3, stride=self.L1 // 2)
+
 
     def forward(self, audio_mix : Tensor, audio_ref : Tensor, audio_ref_length : Tensor, *args, **kwargs):
         # Speech Encoder
@@ -163,7 +208,6 @@ class SpExPlus(nn.Module):
         # bs x 3N_filters x L_out
         y = torch.concat([y1, y2, y3], dim=1)
 
-
         # Reference input
 
         ref_len = audio_ref.shape[-1]
@@ -179,7 +223,6 @@ class SpExPlus(nn.Module):
         # bs x 3N_filters x L_out_ref
         x = torch.concat([x1, x2, x3], dim=1)
 
-
         # Speaker Encoder
 
         x = self.speaker_encoder(x)
@@ -190,10 +233,24 @@ class SpExPlus(nn.Module):
         cls_logits = self.speaker_encoder_head(speaker_emb)
 
         # Speaker Extractor
+        self.speaker_extractor(y, speaker_emb)
 
-        # speaker_emb
+        m1 = F.relu(self.masks_conv[0](y1))
+        m2 = F.relu(self.masks_conv[1](y2))
+        m3 = F.relu(self.masks_conv[2](y3))
 
-        return {"s1" : None, "s2" : None, "s3" : None, "logits": cls_logits}
+        s1 = y1 * m1
+        s2 = y2 * m2
+        s3 = y3 * m3
+
+        # Speech Decoder
+
+        s1 = self.decoder_short(s1)
+        s2 = self.decoder_middle(s2)
+        s3 = self.decoder_long(s3)
+
+
+        return {"s1" : s1, "s2" : s2, "s3" : s3, "logits": cls_logits}
 
 
     def __str__(self):
