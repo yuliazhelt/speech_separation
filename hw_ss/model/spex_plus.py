@@ -25,15 +25,14 @@ class GlobalLayerNorm(nn.Module):
     def __init__(self, channel_size):
         super().__init__()
         # shape (1, C, 1)
-        self.gamma = nn.Parameter(torch.Tensor(1, channel_size, 1))
-        self.beta = nn.Parameter(torch.Tensor(1, channel_size, 1))
+        self.gamma = nn.Parameter(torch.ones(1, channel_size, 1), requires_grad=True)
+        self.beta = nn.Parameter(torch.zeros(1, channel_size, 1), requires_grad=True)
         self.reset_parameters()
 
     def reset_parameters(self):
         self.gamma.data.fill_(1)
         self.beta.data.zero_()
 
-    @torch.cuda.amp.autocast(enabled=False)
     def forward(self, y):
         """Forward.
         Args:
@@ -41,8 +40,8 @@ class GlobalLayerNorm(nn.Module):
         """
 
         mean = y.mean(dim=(1, 2), keepdim=True)  # (B, 1, 1)
-        var = (torch.pow(y - mean, 2)).mean(dim=(1, 2), keepdim=True)
-        gLN = self.gamma * (y - mean) / torch.pow(var + 1e-6, 0.5) + self.beta
+        var = ((y - mean) ** 2).mean(dim=(1, 2), keepdim=True)
+        gLN = self.gamma * (y - mean) / (var + 1e-6) ** (1/2) + self.beta
 
         return gLN
 
@@ -81,8 +80,8 @@ class TCNBlock(nn.Module):
 
         self.net = nn.Sequential(
             nn.Conv1d(in_channels=in_channels + speaker_emb_dim if is_first else in_channels, out_channels=hidden_channels, kernel_size=1),
-            GlobalLayerNorm(channel_size=hidden_channels),
             nn.PReLU(),
+            GlobalLayerNorm(channel_size=hidden_channels),
             nn.Conv1d(
                 in_channels=hidden_channels,
                 out_channels=hidden_channels,
@@ -91,8 +90,8 @@ class TCNBlock(nn.Module):
                 padding=padding,
                 groups=hidden_channels
             ),
-            GlobalLayerNorm(channel_size=hidden_channels),
             nn.PReLU(),
+            GlobalLayerNorm(channel_size=hidden_channels),
             nn.Conv1d(in_channels=hidden_channels, out_channels=in_channels, kernel_size=1),
         )
 
@@ -100,14 +99,11 @@ class TCNBlock(nn.Module):
     def forward(self, x, speaker_emb=None):
         if speaker_emb is not None:
             # stack on channels dim
-            L = x.shape[-1]
-            speaker_emb = torch.unsqueeze(speaker_emb, -1)
-            speaker_emb = speaker_emb.repeat(1, 1, L)
-            inp = torch.concat([x, speaker_emb], dim=1)
+            inp = torch.cat([x, speaker_emb], dim=1)
         else:
             inp = x
-        x = x + self.net(inp)
-        return x
+        out = x + self.net(inp)
+        return out
     
 class StackedTCNs(nn.Module):
 
@@ -156,25 +152,27 @@ class SpeakerExtractor(nn.Module):
             nn.Conv1d(in_channels=3*N_filters, out_channels=in_channels, kernel_size=1)
         )
 
-        self.tcn_staked_blocks = nn.ModuleList()
+        self.tcn_stacked_blocks = nn.ModuleList(
+            [StackedTCNs(in_channels=in_channels, hidden_channels=hidden_channels, speaker_emb_dim=speaker_emb_dim, num_blocks=num_blocks) for _ in range(num_stacked)]
+        )
 
-        for _ in range(num_stacked):
-            self.tcn_staked_blocks.append(StackedTCNs(in_channels=in_channels, hidden_channels=hidden_channels, speaker_emb_dim=speaker_emb_dim, num_blocks=num_blocks))
 
         self.masks_conv = nn.ModuleList(
             [nn.Conv1d(in_channels=in_channels, out_channels=N_filters, kernel_size=1) for _ in range(3)]
         )
 
     def forward(self, y, y1, y2, y3, speaker_emb):
+        L = y.shape[-1]
+        speaker_emb = torch.unsqueeze(speaker_emb, -1).expand(-1, -1, L)
 
-        y = self.speaker_extractor_prep(y)
+        out = self.speaker_extractor_prep(y)
 
         for i in range(self.num_stacked):
-            y = self.tcn_staked_blocks[i](y, speaker_emb)
+            out = self.tcn_stacked_blocks[i](out, speaker_emb)
 
-        m1 = F.relu(self.masks_conv[0](y1))
-        m2 = F.relu(self.masks_conv[1](y2))
-        m3 = F.relu(self.masks_conv[2](y3))
+        m1 = F.relu(self.masks_conv[0](out))
+        m2 = F.relu(self.masks_conv[1](out))
+        m3 = F.relu(self.masks_conv[2](out))
 
         s1 = y1 * m1
         s2 = y2 * m2
@@ -197,12 +195,15 @@ class SpExPlus(nn.Module):
         self.L1 = 40
         self.L2 = 160
         self.L3 = 320
+        # self.L1 = 20
+        # self.L2 = 80
+        # self.L3 = 160
 
         # Speech Encoder
         self.N_filters = 256
-        self.encoder_short = nn.Conv1d(in_channels=1, out_channels=self.N_filters, kernel_size=self.L1, stride=self.L1 // 2)
-        self.encoder_middle = nn.Conv1d(in_channels=1, out_channels=self.N_filters, kernel_size=self.L2, stride=self.L1 // 2)
-        self.encoder_long = nn.Conv1d(in_channels=1, out_channels=self.N_filters, kernel_size=self.L3, stride=self.L1 // 2)
+        self.encoder_short = nn.Conv1d(in_channels=1, out_channels=self.N_filters, kernel_size=self.L1, stride=self.L1 // 2, bias=False)
+        self.encoder_middle = nn.Conv1d(in_channels=1, out_channels=self.N_filters, kernel_size=self.L2, stride=self.L1 // 2, bias=False)
+        self.encoder_long = nn.Conv1d(in_channels=1, out_channels=self.N_filters, kernel_size=self.L3, stride=self.L1 // 2, bias=False)
 
         # Speaker Encoder
         self.speaker_encoder = nn.Sequential(
@@ -211,6 +212,7 @@ class SpExPlus(nn.Module):
             nn.Sequential(*[ResNetBlock(in_dim=256, hidden_dim=512) for _ in range(N_resnet_blocks)]),
             nn.Conv1d(in_channels=256, out_channels=self.speaker_emb_dim, kernel_size=1)
         )
+
         self.speaker_encoder_head = nn.Linear(in_features=self.speaker_emb_dim, out_features=self.n_speakers)
 
         # Speaker Extractor
@@ -221,13 +223,13 @@ class SpExPlus(nn.Module):
             hidden_channels=512,
             speaker_emb_dim=self.speaker_emb_dim,
             num_blocks=4,
-            num_stacked=2
+            num_stacked=8
         )
 
         # Speech Decoder
-        self.decoder_short = nn.ConvTranspose1d(in_channels=self.N_filters, out_channels=1, kernel_size=self.L1, stride=self.L1 // 2)
-        self.decoder_middle = nn.ConvTranspose1d(in_channels=self.N_filters, out_channels=1, kernel_size=self.L2, stride=self.L1 // 2)
-        self.decoder_long = nn.ConvTranspose1d(in_channels=self.N_filters, out_channels=1, kernel_size=self.L3, stride=self.L1 // 2)
+        self.decoder_short = nn.ConvTranspose1d(in_channels=self.N_filters, out_channels=1, kernel_size=self.L1, stride=self.L1 // 2, bias=False)
+        self.decoder_middle = nn.ConvTranspose1d(in_channels=self.N_filters, out_channels=1, kernel_size=self.L2, stride=self.L1 // 2, bias=False)
+        self.decoder_long = nn.ConvTranspose1d(in_channels=self.N_filters, out_channels=1, kernel_size=self.L3, stride=self.L1 // 2, bias=False)
 
 
     def forward(self, audio_mix : Tensor, audio_ref : Tensor, audio_ref_length : Tensor, *args, **kwargs):
@@ -244,7 +246,7 @@ class SpExPlus(nn.Module):
         y3 = F.relu(self.encoder_long(F.pad(audio_mix, (0, L_in3 - mix_len))))
 
         # bs x 3N_filters x L_out
-        y = torch.concat([y1, y2, y3], dim=1)
+        y = torch.cat([y1, y2, y3], dim=1)
 
         # Reference input
 
@@ -259,15 +261,12 @@ class SpExPlus(nn.Module):
         x3 = F.relu(self.encoder_long(F.pad(audio_ref, (0, L_in3_ref - ref_len))))
 
         # bs x 3N_filters x L_out_ref
-        x = torch.concat([x1, x2, x3], dim=1)
+        x = torch.cat([x1, x2, x3], dim=1)
 
         # Speaker Encoder
 
         x = self.speaker_encoder(x)
-        # Mean pooling depends on init ref_lenths + conv changes in Speech Encoder
-        # L_out = (L_in - kernel_size) // stride + 1
-        new_ref_lenths = (audio_ref_length - self.L1) // (self.L1 // 2) + 1
-        speaker_emb = x.sum(dim=-1) / new_ref_lenths.view(-1,1).float()
+        speaker_emb = x.mean(dim=-1)
         cls_logits = self.speaker_encoder_head(speaker_emb)
 
         # Speaker Extractor
@@ -275,7 +274,6 @@ class SpExPlus(nn.Module):
         s1, s2, s3 = self.speaker_extractor(y, y1, y2, y3, speaker_emb)
 
         # Speech Decoder
-
 
         s1 = self.decoder_short(s1)[:, :, :mix_len]
         s2 = self.decoder_middle(s2)[:, :, :mix_len]
