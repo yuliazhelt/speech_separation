@@ -17,3 +17,5 @@ pillow
 
 pyloudnorm
 torchmetrics
+
+pesq
