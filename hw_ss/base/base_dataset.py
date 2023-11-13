@@ -57,7 +57,7 @@ class BaseDataset(Dataset):
             "path_ref": audio_ref_path,
             "path_mix": audio_mix_path,
             "path_target": audio_target_path,
-            "speaker_id": data_dict["speaker_id"]
+            "speaker_id": data_dict["speaker_id"] if "speaker_id" in data_dict else torch.zeros(len(audio_ref_wave))
         }
 
     def __len__(self):

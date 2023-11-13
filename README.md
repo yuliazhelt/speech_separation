@@ -1,5 +1,10 @@
 # Homework 2 (Speaker Separation)
 
+## Public test
+
+SI-SDR 5.524159908294678
+PESQ 1.276070475578308
+
 ## Task
 Implement one of the following solutions
 [SpEx+](https://www.isca-speech.org/archive/interspeech_2020/ge20_interspeech.html),

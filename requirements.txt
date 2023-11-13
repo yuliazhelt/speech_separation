@@ -19,3 +19,5 @@ pyloudnorm
 torchmetrics
 
 pesq
+
+gdown

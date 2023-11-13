@@ -12,6 +12,9 @@ from hw_ss.utils import ROOT_PATH
 from hw_ss.utils.object_loading import get_dataloaders
 from hw_ss.utils.parse_config import ConfigParser
 
+import hw_ss.metric as module_metric
+
+
 DEFAULT_CHECKPOINT_PATH = ROOT_PATH / "default_test_model" / "checkpoint.pth"
 
 
@@ -21,15 +24,19 @@ def main(config, out_file):
     # define cpu or gpu if possible
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # text_encoder
-    text_encoder = config.get_text_encoder()
-
     # setup data_loader instances
-    dataloaders = get_dataloaders(config, text_encoder)
+    dataloaders = get_dataloaders(config)
 
     # build model architecture
-    model = config.init_obj(config["arch"], module_model, n_class=len(text_encoder))
+    model = config.init_obj(config["arch"], module_model)
     logger.info(model)
+
+    metrics = [
+        config.init_obj(metric_dict, module_metric)
+        for metric_dict in config["metrics"]
+    ]
+    print(metrics)
+
 
     logger.info("Loading checkpoint: {} ...".format(config.resume))
     checkpoint = torch.load(config.resume, map_location=device)
@@ -42,7 +49,10 @@ def main(config, out_file):
     model = model.to(device)
     model.eval()
 
-    results = []
+    results = {
+        'si_sdr': 0,
+        'pesq': 0
+    }
 
     with torch.no_grad():
         for batch_num, batch in enumerate(tqdm(dataloaders["test"])):
@@ -52,26 +62,18 @@ def main(config, out_file):
                 batch.update(output)
             else:
                 batch["logits"] = output
-            batch["log_probs"] = torch.log_softmax(batch["logits"], dim=-1)
-            batch["log_probs_length"] = model.transform_input_lengths(
-                batch["spectrogram_length"]
-            )
-            batch["probs"] = batch["log_probs"].exp().cpu()
-            batch["argmax"] = batch["probs"].argmax(-1)
-            for i in range(len(batch["text"])):
-                argmax = batch["argmax"][i]
-                argmax = argmax[: int(batch["log_probs_length"][i])]
-                results.append(
-                    {
-                        "ground_trurh": batch["text"][i],
-                        "pred_text_argmax": text_encoder.ctc_decode(argmax.cpu().numpy()),
-                        "pred_text_beam_search": text_encoder.ctc_beam_search(
-                            batch["probs"][i], batch["log_probs_length"][i], beam_size=100
-                        )[:10],
-                    }
-                )
-    with Path(out_file).open("w") as f:
-        json.dump(results, f, indent=2)
+            min_len = min(batch["audio_target"].shape[-1], batch["s1"].shape[-1])
+            batch["audio_target"] = batch["audio_target"][:,:,:min_len]
+            batch["s1"] = batch["s1"][:,:,:min_len]
+            batch["s2"] = batch["s2"][:,:,:min_len]
+            batch["s3"] = batch["s3"][:,:,:min_len]
+            
+            for met in metrics:
+                results[met.name] += met(**batch) 
+
+    for key, num in results.items():
+        print(key, (num / len(dataloaders["test"])).item())
+
 
 
 if __name__ == "__main__":
@@ -134,7 +136,8 @@ if __name__ == "__main__":
 
     # first, we need to obtain config with model parameters
     # we assume it is located with checkpoint in the same folder
-    model_config = Path(args.resume).parent / "config.json"
+    model_config = Path(args.config)
+
     with model_config.open() as f:
         config = ConfigParser(json.load(f), resume=args.resume)
 
@@ -154,11 +157,11 @@ if __name__ == "__main__":
                 "datasets": [
                     {
                         "type": "CustomDirAudioDataset",
+                        "batch_size": 5,
                         "args": {
-                            "audio_dir": str(test_data_folder / "audio"),
-                            "transcription_dir": str(
-                                test_data_folder / "transcriptions"
-                            ),
+                            "mix_dir": str(test_data_folder / "mix"),
+                            "ref_dir": str(test_data_folder / "refs"),
+                            "target_dir": str(test_data_folder / "targets")
                         },
                     }
                 ],
