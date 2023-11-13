@@ -88,14 +88,13 @@
   "trainer": {
     "epochs": 600,
     "save_dir": "saved/",
-    "save_period": 5,
+    "save_period": 10,
     "verbosity": 2,
     "monitor": "min val_loss",
     "early_stop": 10000,
     "visualize": "wandb",
     "wandb_project": "ss_project",
     "len_epoch": 100,
-    "grad_norm_clip": 10,
-    "resume_path": "saved/models/one_batch_test/1113_155355/checkpoint-epoch115.pth"
+    "grad_norm_clip": 10
   }
 }

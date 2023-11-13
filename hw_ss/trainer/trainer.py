@@ -164,8 +164,6 @@ class Trainer(BaseTrainer):
 
         metrics.update("loss", batch["loss"].item())
         for met in self.metrics:
-            if met.name == 'pesq':
-                continue
             metrics.update(met.name, met(**batch))
         return batch
 

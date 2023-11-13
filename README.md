@@ -1,9 +1,31 @@
 # Homework 2 (Speaker Separation)
 
+## Installation guide
+
+Load trained model:
+```shell
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r ./requirements.txt
+python3 load_model.py
+```
+
+## Reproduction
+Train for 160 epochs with config hw_ss/configs/train.json (custom mixed LibriSpeech train-clean-100 20k file triplets)
+
+```
+python train.py -c [config]
+```
+
+
 ## Public test
 
-SI-SDR 5.524159908294678
-PESQ 1.276070475578308
+python3 test.py -c hw_ss/configs/test.json -t data/datasets/public_test -r model_best.pth 
+```
+SI-SDR 5.751926898956299
+PESQ 1.2786586284637451
+```
+
 
 ## Task
 Implement one of the following solutions
