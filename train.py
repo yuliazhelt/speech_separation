@@ -62,6 +62,7 @@ def main(config):
         device=device,
         dataloaders=dataloaders,
         lr_scheduler=lr_scheduler,
+        resume_path=config["trainer"].get("resume_path", None),
         len_epoch=config["trainer"].get("len_epoch", None)
     )
 
