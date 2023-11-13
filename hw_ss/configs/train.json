@@ -1,5 +1,5 @@
 {
-  "name": "one_batch_test",
+  "name": "train",
   "n_gpu": 1,
   "preprocessing": {
     "sr": 16000,
@@ -23,15 +23,15 @@
   },
   "data": {
     "train": {
-      "batch_size": 10,
+      "batch_size": 4,
       "num_workers": 4,
       "datasets": [
         {
           "type": "LibrispeechDatasetMixed",
           "args": {
             "part": "train-clean-100",
-            "nfiles": 20000,
-            "limit": 10
+            "nfiles": 20000
+
           }
         }
       ]
@@ -45,16 +45,16 @@
           "args": {
             "part": "test-clean",
             "nfiles": 3000,
-            "limit": 10
+            "limit": 100
           }
         }
       ]
     }
   },
   "optimizer": {
-    "type": "SGD",
+    "type": "Adam",
     "args": {
-      "lr": 1e-2
+      "lr": 3e-4
     }
   },
   "loss": {
@@ -71,28 +71,31 @@
       "args": {
         "name": "accuracy"
       }
+    },
+    {
+      "type": "SI_SDRMetric",
+      "args": {
+        "name": "si_sdr"
+      }
     }
   ],
   "lr_scheduler": {
-    "type": "OneCycleLR",
+    "type": "CosineAnnealingWarmRestarts",
     "args": {
-      "steps_per_epoch": 100,
-      "epochs": 50,
-      "anneal_strategy": "cos",
-      "max_lr": 1e-2,
-      "pct_start": 0.2
+      "T_0": 2000
     }
   },
   "trainer": {
-    "epochs": 50,
+    "epochs": 600,
     "save_dir": "saved/",
     "save_period": 5,
     "verbosity": 2,
     "monitor": "min val_loss",
-    "early_stop": 100,
+    "early_stop": 10000,
     "visualize": "wandb",
     "wandb_project": "ss_project",
     "len_epoch": 100,
-    "grad_norm_clip": 10
+    "grad_norm_clip": 10,
+    "resume_path": "saved/models/one_batch_test/1113_155355/checkpoint-epoch115.pth"
   }
 }
